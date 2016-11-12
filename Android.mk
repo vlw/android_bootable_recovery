@@ -99,6 +99,8 @@ LOCAL_CLANG := true
 #    libm \
 #    libc
 
+LOCAL_C_INCLUDES += $(LOCAL_PATH)/include
+LOCAL_EXPORT_C_INCLUDE_DIRS := $(LOCAL_PATH)/include
 LOCAL_C_INCLUDES += \
     system/vold \
     system/extras/ext4_utils \

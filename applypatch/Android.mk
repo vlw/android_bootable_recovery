@@ -29,11 +29,14 @@ LOCAL_C_INCLUDES += \
     external/zlib \
     $(commands_recovery_local_path)
 
+LOCAL_C_INCLUDES += $(commands_recovery_local_path)
+
 LOCAL_CLANG := true
 LOCAL_SRC_FILES := applypatch.cpp bspatch.cpp freecache.cpp imgpatch.cpp utils.cpp
 LOCAL_MODULE := libapplypatch
 LOCAL_MODULE_TAGS := eng
 LOCAL_C_INCLUDES += bootable/recovery
+LOCAL_C_INCLUDES += $(commands_recovery_local_path)/include
 LOCAL_STATIC_LIBRARIES += libbase libotafault libmtdutils libcrypto_static libbz libz
 
 include $(BUILD_STATIC_LIBRARY)
@@ -59,6 +62,7 @@ LOCAL_CLANG := true
 LOCAL_SRC_FILES := main.cpp
 LOCAL_MODULE := applypatch
 LOCAL_C_INCLUDES += bootable/recovery
+LOCAL_C_INCLUDES += $(commands_recovery_local_path)/include
 LOCAL_STATIC_LIBRARIES += libapplypatch libbase libotafault libmtdutils libcrypto_static libbz \
                           libedify \
 

@@ -11,6 +11,8 @@ LOCAL_SRC_FILES := \
     graphics_utils.cpp \
     events.cpp
 
+  LOCAL_C_INCLUDES += $(commands_recovery_local_path)/include
+
 ifneq ($(TW_BOARD_CUSTOM_GRAPHICS),)
     $(warning ****************************************************************************)
     $(warning * TW_BOARD_CUSTOM_GRAPHICS support has been deprecated in TWRP.            *)

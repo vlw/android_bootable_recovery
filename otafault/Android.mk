@@ -27,6 +27,7 @@ LOCAL_MODULE_TAGS := eng
 LOCAL_MODULE := libotafault
 LOCAL_CLANG := true
 LOCAL_C_INCLUDES := bootable/recovery
+LOCAL_C_INCLUDES += $(commands_recovery_local_path)/include
 LOCAL_EXPORT_C_INCLUDE_DIRS := $(LOCAL_PATH)
 LOCAL_WHOLE_STATIC_LIBRARIES := $(otafault_static_libs)
 

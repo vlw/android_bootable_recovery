@@ -23,6 +23,7 @@ LOCAL_CPPFLAGS += -Wno-unused-parameter
 LOCAL_CPPFLAGS += -Wno-deprecated-register
 LOCAL_CLANG := true
 LOCAL_C_INCLUDES += $(LOCAL_PATH)/..
+LOCAL_C_INCLUDES += $(commands_recovery_local_path)/include
 LOCAL_STATIC_LIBRARIES += libbase
 
 include $(BUILD_HOST_EXECUTABLE)
@@ -39,6 +40,7 @@ LOCAL_CPPFLAGS += -Wno-deprecated-register
 LOCAL_MODULE := libedify
 LOCAL_CLANG := true
 LOCAL_C_INCLUDES += $(LOCAL_PATH)/..
+LOCAL_C_INCLUDES += $(commands_recovery_local_path)/include
 LOCAL_STATIC_LIBRARIES += libbase
 
 include $(BUILD_STATIC_LIBRARY)
