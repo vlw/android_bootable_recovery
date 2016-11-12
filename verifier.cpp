@@ -24,6 +24,8 @@
 
 #include <openssl/ecdsa.h>
 #include <openssl/obj_mac.h>
+#include <openssl/bn.h>
+#include <openssl/ec.h>
 
 #include "asn1_decoder.h"
 #include "common.h"
@@ -404,7 +406,10 @@ std::unique_ptr<EC_KEY, ECKEYDeleter> parse_ec_key(FILE* file) {
     }
 
     // Verify that |key_len| matches the group order.
-    if (key_len_bytes != BN_num_bytes(EC_GROUP_get0_order(group.get()))) {
+    BIGNUM *BNchk0 = nullptr;
+    EC_GROUP_get_order(group.get(), BNchk0, nullptr);
+	const BIGNUM *BNcons = BNchk0;
+    if (key_len_bytes != BN_num_bytes(BNcons)) {
         return nullptr;
     }
 
