@@ -40,6 +40,7 @@ LOCAL_MODULE_TAGS := tests
 LOCAL_MODULE := otafault_test
 LOCAL_STATIC_LIBRARIES := $(otafault_static_libs)
 LOCAL_C_INCLUDES := bootable/recovery
+LOCAL_C_INCLUDES += $(commands_recovery_local_path)/include
 LOCAL_FORCE_STATIC_EXECUTABLE := true
 
 include $(BUILD_EXECUTABLE)
