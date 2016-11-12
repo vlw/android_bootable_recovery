@@ -296,7 +296,7 @@ int gr_init(void)
 {
     gr_draw = NULL;
 
-    gr_backend = open_overlay();
+  /*  gr_backend = open_overlay();
     if (gr_backend) {
         gr_draw = gr_backend->init(gr_backend);
         if (!gr_draw) {
@@ -334,6 +334,7 @@ int gr_init(void)
 #else
     printf("Skipping drm graphics -- not present in build tree\n");
 #endif
+*/
 
     if (!gr_draw) {
         gr_backend = open_fbdev();
