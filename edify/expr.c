@@ -21,11 +21,6 @@
 #include <stdarg.h>
 #include <unistd.h>
 
-#include <string>
-
-#include <android-base/stringprintf.h>
-#include <android-base/strings.h>
-
 #include "expr.h"
 
 // Functions should:
@@ -41,7 +36,7 @@ char* Evaluate(State* state, Expr* expr) {
     Value* v = expr->fn(expr->name, state, expr->argc, expr->argv);
     if (v == NULL) return NULL;
     if (v->type != VAL_STRING) {
-        ErrorAbort(state, kArgsParsingFailure, "expecting string, got value type %d", v->type);
+        ErrorAbort(state, "expecting string, got value type %d", v->type);
         FreeValue(v);
         return NULL;
     }
@@ -56,7 +51,7 @@ Value* EvaluateValue(State* state, Expr* expr) {
 
 Value* StringValue(char* str) {
     if (str == NULL) return NULL;
-    Value* v = reinterpret_cast<Value*>(malloc(sizeof(Value)));
+    Value* v = malloc(sizeof(Value));
     v->type = VAL_STRING;
     v->size = strlen(str);
     v->data = str;
@@ -73,7 +68,7 @@ Value* ConcatFn(const char* name, State* state, int argc, Expr* argv[]) {
     if (argc == 0) {
         return StringValue(strdup(""));
     }
-    char** strings = reinterpret_cast<char**>(malloc(argc * sizeof(char*)));
+    char** strings = malloc(argc * sizeof(char*));
     int i;
     for (i = 0; i < argc; ++i) {
         strings[i] = NULL;
@@ -88,9 +83,8 @@ Value* ConcatFn(const char* name, State* state, int argc, Expr* argv[]) {
         length += strlen(strings[i]);
     }
 
-    result = reinterpret_cast<char*>(malloc(length+1));
-    int p;
-    p = 0;
+    result = malloc(length+1);
+    int p = 0;
     for (i = 0; i < argc; ++i) {
         strcpy(result+p, strings[i]);
         p += strlen(strings[i]);
@@ -155,7 +149,7 @@ Value* AssertFn(const char* name, State* state, int argc, Expr* argv[]) {
         if (!b) {
             int prefix_len;
             int len = argv[i]->end - argv[i]->start;
-            char* err_src = reinterpret_cast<char*>(malloc(len + 20));
+            char* err_src = malloc(len + 20);
             strcpy(err_src, "assert failed: ");
             prefix_len = strlen(err_src);
             memcpy(err_src + prefix_len, state->script + argv[i]->start, len);
@@ -296,8 +290,7 @@ Value* LessThanIntFn(const char* name, State* state, int argc, Expr* argv[]) {
         goto done;
     }
 
-    long r_int;
-    r_int = strtol(right, &end, 10);
+    long r_int = strtol(right, &end, 10);
     if (right[0] == '\0' || *end != '\0') {
         goto done;
     }
@@ -332,11 +325,11 @@ Value* Literal(const char* name, State* state, int argc, Expr* argv[]) {
 Expr* Build(Function fn, YYLTYPE loc, int count, ...) {
     va_list v;
     va_start(v, count);
-    Expr* e = reinterpret_cast<Expr*>(malloc(sizeof(Expr)));
+    Expr* e = malloc(sizeof(Expr));
     e->fn = fn;
     e->name = "(operator)";
     e->argc = count;
-    e->argv = reinterpret_cast<Expr**>(malloc(count * sizeof(Expr*)));
+    e->argv = malloc(count * sizeof(Expr*));
     int i;
     for (i = 0; i < count; ++i) {
         e->argv[i] = va_arg(v, Expr*);
@@ -358,7 +351,7 @@ NamedFunction* fn_table = NULL;
 void RegisterFunction(const char* name, Function fn) {
     if (fn_entries >= fn_size) {
         fn_size = fn_size*2 + 1;
-        fn_table = reinterpret_cast<NamedFunction*>(realloc(fn_table, fn_size * sizeof(NamedFunction)));
+        fn_table = realloc(fn_table, fn_size * sizeof(NamedFunction));
     }
     fn_table[fn_entries].name = name;
     fn_table[fn_entries].fn = fn;
@@ -378,8 +371,8 @@ void FinishRegistration() {
 Function FindFunction(const char* name) {
     NamedFunction key;
     key.name = name;
-    NamedFunction* nf = reinterpret_cast<NamedFunction*>(bsearch(&key, fn_table, fn_entries,
-            sizeof(NamedFunction), fn_entry_compare));
+    NamedFunction* nf = bsearch(&key, fn_table, fn_entries,
+                                sizeof(NamedFunction), fn_entry_compare);
     if (nf == NULL) {
         return NULL;
     }
@@ -408,7 +401,7 @@ void RegisterBuiltins() {
 // zero or more char** to put them in).  If any expression evaluates
 // to NULL, free the rest and return -1.  Return 0 on success.
 int ReadArgs(State* state, Expr* argv[], int count, ...) {
-    char** args = reinterpret_cast<char**>(malloc(count * sizeof(char*)));
+    char** args = malloc(count * sizeof(char*));
     va_list v;
     va_start(v, count);
     int i;
@@ -434,7 +427,7 @@ int ReadArgs(State* state, Expr* argv[], int count, ...) {
 // zero or more Value** to put them in).  If any expression evaluates
 // to NULL, free the rest and return -1.  Return 0 on success.
 int ReadValueArgs(State* state, Expr* argv[], int count, ...) {
-    Value** args = reinterpret_cast<Value**>(malloc(count * sizeof(Value*)));
+    Value** args = malloc(count * sizeof(Value*));
     va_list v;
     va_start(v, count);
     int i;
@@ -498,29 +491,15 @@ Value** ReadValueVarArgs(State* state, int argc, Expr* argv[]) {
     return args;
 }
 
-static void ErrorAbortV(State* state, const char* format, va_list ap) {
-    std::string buffer;
-    android::base::StringAppendV(&buffer, format, ap);
-    free(state->errmsg);
-    state->errmsg = strdup(buffer.c_str());
-    return;
-}
-
 // Use printf-style arguments to compose an error message to put into
-// *state.  Returns nullptr.
+// *state.  Returns NULL.
 Value* ErrorAbort(State* state, const char* format, ...) {
-    va_list ap;
-    va_start(ap, format);
-    ErrorAbortV(state, format, ap);
-    va_end(ap);
-    return nullptr;
-}
-
-Value* ErrorAbort(State* state, CauseCode cause_code, const char* format, ...) {
-    va_list ap;
-    va_start(ap, format);
-    ErrorAbortV(state, format, ap);
-    va_end(ap);
-    state->cause_code = cause_code;
-    return nullptr;
+    char* buffer = malloc(4096);
+    va_list v;
+    va_start(v, format);
+    vsnprintf(buffer, 4096, format, v);
+    va_end(v);
+    free(state->errmsg);
+    state->errmsg = buffer;
+    return NULL;
 }

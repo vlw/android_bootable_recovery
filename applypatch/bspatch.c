@@ -22,14 +22,14 @@
 
 #include <stdio.h>
 #include <sys/stat.h>
-#include <sys/types.h>
 #include <errno.h>
+#include <malloc.h>
 #include <unistd.h>
 #include <string.h>
 
 #include <bzlib.h>
 
-#include "openssl/sha.h"
+#include "mincrypt/sha.h"
 #include "applypatch.h"
 
 void ShowBSDiffLicense() {
@@ -102,22 +102,26 @@ int ApplyBSDiffPatch(const unsigned char* old_data, ssize_t old_size,
                      const Value* patch, ssize_t patch_offset,
                      SinkFn sink, void* token, SHA_CTX* ctx) {
 
-    std::vector<unsigned char> new_data;
-    if (ApplyBSDiffPatchMem(old_data, old_size, patch, patch_offset, &new_data) != 0) {
+    unsigned char* new_data;
+    ssize_t new_size;
+    if (ApplyBSDiffPatchMem(old_data, old_size, patch, patch_offset,
+                            &new_data, &new_size) != 0) {
         return -1;
     }
 
-    if (sink(new_data.data(), new_data.size(), token) < static_cast<ssize_t>(new_data.size())) {
+    if (sink(new_data, new_size, token) < new_size) {
         printf("short write of output: %d (%s)\n", errno, strerror(errno));
         return 1;
     }
-    if (ctx) SHA1_Update(ctx, new_data.data(), new_data.size());
+    if (ctx) SHA_update(ctx, new_data, new_size);
+    free(new_data);
+
     return 0;
 }
 
 int ApplyBSDiffPatchMem(const unsigned char* old_data, ssize_t old_size,
                         const Value* patch, ssize_t patch_offset,
-                        std::vector<unsigned char>* new_data) {
+                        unsigned char** new_data, ssize_t* new_size) {
     // Patch data format:
     //   0       8       "BSDIFF40"
     //   8       8       X
@@ -136,12 +140,12 @@ int ApplyBSDiffPatchMem(const unsigned char* old_data, ssize_t old_size,
         return 1;
     }
 
-    ssize_t ctrl_len, data_len, new_size;
+    ssize_t ctrl_len, data_len;
     ctrl_len = offtin(header+8);
     data_len = offtin(header+16);
-    new_size = offtin(header+24);
+    *new_size = offtin(header+24);
 
-    if (ctrl_len < 0 || data_len < 0 || new_size < 0) {
+    if (ctrl_len < 0 || data_len < 0 || *new_size < 0) {
         printf("corrupt patch file header (data lengths)\n");
         return 1;
     }
@@ -178,14 +182,19 @@ int ApplyBSDiffPatchMem(const unsigned char* old_data, ssize_t old_size,
         printf("failed to bzinit extra stream (%d)\n", bzerr);
     }
 
-    new_data->resize(new_size);
+    *new_data = malloc(*new_size);
+    if (*new_data == NULL) {
+        printf("failed to allocate %ld bytes of memory for output file\n",
+               (long)*new_size);
+        return 1;
+    }
 
     off_t oldpos = 0, newpos = 0;
     off_t ctrl[3];
     off_t len_read;
     int i;
     unsigned char buf[24];
-    while (newpos < new_size) {
+    while (newpos < *new_size) {
         // Read control data
         if (FillBuffer(buf, 24, &cstream) != 0) {
             printf("error while reading control stream\n");
@@ -201,13 +210,13 @@ int ApplyBSDiffPatchMem(const unsigned char* old_data, ssize_t old_size,
         }
 
         // Sanity check
-        if (newpos + ctrl[0] > new_size) {
+        if (newpos + ctrl[0] > *new_size) {
             printf("corrupt patch (new file overrun)\n");
             return 1;
         }
 
         // Read diff string
-        if (FillBuffer(new_data->data() + newpos, ctrl[0], &dstream) != 0) {
+        if (FillBuffer(*new_data + newpos, ctrl[0], &dstream) != 0) {
             printf("error while reading diff stream\n");
             return 1;
         }
@@ -224,13 +233,13 @@ int ApplyBSDiffPatchMem(const unsigned char* old_data, ssize_t old_size,
         oldpos += ctrl[0];
 
         // Sanity check
-        if (newpos + ctrl[1] > new_size) {
+        if (newpos + ctrl[1] > *new_size) {
             printf("corrupt patch (new file overrun)\n");
             return 1;
         }
 
         // Read extra string
-        if (FillBuffer(new_data->data() + newpos, ctrl[1], &estream) != 0) {
+        if (FillBuffer(*new_data + newpos, ctrl[1], &estream) != 0) {
             printf("error while reading extra stream\n");
             return 1;
         }

@@ -21,25 +21,15 @@
 #include <sys/cdefs.h>
 #include <sys/stat.h>
 #include <errno.h>
+#include <malloc.h>
 #include <unistd.h>
 #include <string.h>
 
-#include <vector>
-
 #include "zlib.h"
-#include "openssl/sha.h"
+#include "mincrypt/sha.h"
 #include "applypatch.h"
 #include "imgdiff.h"
 #include "utils.h"
-
-int ApplyImagePatch(const unsigned char* old_data, ssize_t old_size,
-                    const unsigned char* patch_data, ssize_t patch_size,
-                    SinkFn sink, void* token) {
-  Value patch = {VAL_BLOB, patch_size,
-      reinterpret_cast<char*>(const_cast<unsigned char*>(patch_data))};
-  return ApplyImagePatch(
-      old_data, old_size, &patch, sink, token, nullptr, nullptr);
-}
 
 /*
  * Apply the patch given in 'patch_filename' to the source data given
@@ -47,7 +37,7 @@ int ApplyImagePatch(const unsigned char* old_data, ssize_t old_size,
  * file, and update the SHA context with the output data as well.
  * Return 0 on success.
  */
-int ApplyImagePatch(const unsigned char* old_data, ssize_t old_size,
+int ApplyImagePatch(const unsigned char* old_data, ssize_t old_size __unused,
                     const Value* patch,
                     SinkFn sink, void* token, SHA_CTX* ctx,
                     const Value* bonus_data) {
@@ -90,10 +80,6 @@ int ApplyImagePatch(const unsigned char* old_data, ssize_t old_size,
             size_t src_len = Read8(normal_header+8);
             size_t patch_offset = Read8(normal_header+16);
 
-            if (src_start + src_len > static_cast<size_t>(old_size)) {
-                printf("source data too short\n");
-                return -1;
-            }
             ApplyBSDiffPatch(old_data + src_start, src_len,
                              patch, patch_offset, sink, token, ctx);
         } else if (type == CHUNK_RAW) {
@@ -110,7 +96,7 @@ int ApplyImagePatch(const unsigned char* old_data, ssize_t old_size,
                 printf("failed to read chunk %d raw data\n", i);
                 return -1;
             }
-            if (ctx) SHA1_Update(ctx, patch->data + pos, data_len);
+            if (ctx) SHA_update(ctx, patch->data + pos, data_len);
             if (sink((unsigned char*)patch->data + pos,
                      data_len, token) != data_len) {
                 printf("failed to write chunk %d raw data\n", i);
@@ -130,16 +116,12 @@ int ApplyImagePatch(const unsigned char* old_data, ssize_t old_size,
             size_t src_len = Read8(deflate_header+8);
             size_t patch_offset = Read8(deflate_header+16);
             size_t expanded_len = Read8(deflate_header+24);
+            size_t target_len = Read8(deflate_header+32);
             int level = Read4(deflate_header+40);
             int method = Read4(deflate_header+44);
             int windowBits = Read4(deflate_header+48);
             int memLevel = Read4(deflate_header+52);
             int strategy = Read4(deflate_header+56);
-
-            if (src_start + src_len > static_cast<size_t>(old_size)) {
-                printf("source data too short\n");
-                return -1;
-            }
 
             // Decompress the source data; the chunk header tells us exactly
             // how big we expect it to be when decompressed.
@@ -150,54 +132,57 @@ int ApplyImagePatch(const unsigned char* old_data, ssize_t old_size,
             // must be appended from the bonus_data value.
             size_t bonus_size = (i == 1 && bonus_data != NULL) ? bonus_data->size : 0;
 
-            std::vector<unsigned char> expanded_source(expanded_len);
+            unsigned char* expanded_source = malloc(expanded_len);
+            if (expanded_source == NULL) {
+                printf("failed to allocate %zu bytes for expanded_source\n",
+                       expanded_len);
+                return -1;
+            }
 
-            // inflate() doesn't like strm.next_out being a nullptr even with
-            // avail_out being zero (Z_STREAM_ERROR).
-            if (expanded_len != 0) {
-                z_stream strm;
-                strm.zalloc = Z_NULL;
-                strm.zfree = Z_NULL;
-                strm.opaque = Z_NULL;
-                strm.avail_in = src_len;
-                strm.next_in = (unsigned char*)(old_data + src_start);
-                strm.avail_out = expanded_len;
-                strm.next_out = expanded_source.data();
+            z_stream strm;
+            strm.zalloc = Z_NULL;
+            strm.zfree = Z_NULL;
+            strm.opaque = Z_NULL;
+            strm.avail_in = src_len;
+            strm.next_in = (unsigned char*)(old_data + src_start);
+            strm.avail_out = expanded_len;
+            strm.next_out = expanded_source;
 
-                int ret;
-                ret = inflateInit2(&strm, -15);
-                if (ret != Z_OK) {
-                    printf("failed to init source inflation: %d\n", ret);
-                    return -1;
-                }
+            int ret;
+            ret = inflateInit2(&strm, -15);
+            if (ret != Z_OK) {
+                printf("failed to init source inflation: %d\n", ret);
+                return -1;
+            }
 
-                // Because we've provided enough room to accommodate the output
-                // data, we expect one call to inflate() to suffice.
-                ret = inflate(&strm, Z_SYNC_FLUSH);
-                if (ret != Z_STREAM_END) {
-                    printf("source inflation returned %d\n", ret);
-                    return -1;
-                }
-                // We should have filled the output buffer exactly, except
-                // for the bonus_size.
-                if (strm.avail_out != bonus_size) {
-                    printf("source inflation short by %zu bytes\n", strm.avail_out-bonus_size);
-                    return -1;
-                }
-                inflateEnd(&strm);
+            // Because we've provided enough room to accommodate the output
+            // data, we expect one call to inflate() to suffice.
+            ret = inflate(&strm, Z_SYNC_FLUSH);
+            if (ret != Z_STREAM_END) {
+                printf("source inflation returned %d\n", ret);
+                return -1;
+            }
+            // We should have filled the output buffer exactly, except
+            // for the bonus_size.
+            if (strm.avail_out != bonus_size) {
+                printf("source inflation short by %zu bytes\n", strm.avail_out-bonus_size);
+                return -1;
+            }
+            inflateEnd(&strm);
 
-                if (bonus_size) {
-                    memcpy(expanded_source.data() + (expanded_len - bonus_size),
-                           bonus_data->data, bonus_size);
-                }
+            if (bonus_size) {
+                memcpy(expanded_source + (expanded_len - bonus_size),
+                       bonus_data->data, bonus_size);
             }
 
             // Next, apply the bsdiff patch (in memory) to the uncompressed
             // data.
-            std::vector<unsigned char> uncompressed_target_data;
-            if (ApplyBSDiffPatchMem(expanded_source.data(), expanded_len,
+            unsigned char* uncompressed_target_data;
+            ssize_t uncompressed_target_size;
+            if (ApplyBSDiffPatchMem(expanded_source, expanded_len,
                                     patch, patch_offset,
-                                    &uncompressed_target_data) != 0) {
+                                    &uncompressed_target_data,
+                                    &uncompressed_target_size) != 0) {
                 return -1;
             }
 
@@ -205,40 +190,40 @@ int ApplyImagePatch(const unsigned char* old_data, ssize_t old_size,
 
             // we're done with the expanded_source data buffer, so we'll
             // reuse that memory to receive the output of deflate.
-            if (expanded_source.size() < 32768U) {
-                expanded_source.resize(32768U);
+            unsigned char* temp_data = expanded_source;
+            ssize_t temp_size = expanded_len;
+            if (temp_size < 32768) {
+                // ... unless the buffer is too small, in which case we'll
+                // allocate a fresh one.
+                free(temp_data);
+                temp_data = malloc(32768);
+                temp_size = 32768;
             }
 
-            {
-                std::vector<unsigned char>& temp_data = expanded_source;
+            // now the deflate stream
+            strm.zalloc = Z_NULL;
+            strm.zfree = Z_NULL;
+            strm.opaque = Z_NULL;
+            strm.avail_in = uncompressed_target_size;
+            strm.next_in = uncompressed_target_data;
+            ret = deflateInit2(&strm, level, method, windowBits, memLevel, strategy);
+            do {
+                strm.avail_out = temp_size;
+                strm.next_out = temp_data;
+                ret = deflate(&strm, Z_FINISH);
+                ssize_t have = temp_size - strm.avail_out;
 
-                // now the deflate stream
-                z_stream strm;
-                strm.zalloc = Z_NULL;
-                strm.zfree = Z_NULL;
-                strm.opaque = Z_NULL;
-                strm.avail_in = uncompressed_target_data.size();
-                strm.next_in = uncompressed_target_data.data();
-                int ret = deflateInit2(&strm, level, method, windowBits, memLevel, strategy);
-                if (ret != Z_OK) {
-                    printf("failed to init uncompressed data deflation: %d\n", ret);
+                if (sink(temp_data, have, token) != have) {
+                    printf("failed to write %ld compressed bytes to output\n",
+                           (long)have);
                     return -1;
                 }
-                do {
-                    strm.avail_out = temp_data.size();
-                    strm.next_out = temp_data.data();
-                    ret = deflate(&strm, Z_FINISH);
-                    ssize_t have = temp_data.size() - strm.avail_out;
+                if (ctx) SHA_update(ctx, temp_data, have);
+            } while (ret != Z_STREAM_END);
+            deflateEnd(&strm);
 
-                    if (sink(temp_data.data(), have, token) != have) {
-                        printf("failed to write %ld compressed bytes to output\n",
-                               (long)have);
-                        return -1;
-                    }
-                    if (ctx) SHA1_Update(ctx, temp_data.data(), have);
-                } while (ret != Z_STREAM_END);
-                deflateEnd(&strm);
-            }
+            free(temp_data);
+            free(uncompressed_target_data);
         } else {
             printf("patch chunk %d is unknown type %d\n", i, type);
             return -1;

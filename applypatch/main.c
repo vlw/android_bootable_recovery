@@ -19,21 +19,18 @@
 #include <string.h>
 #include <unistd.h>
 
-#include <memory>
-#include <vector>
-
 #include "applypatch.h"
 #include "edify/expr.h"
-#include "openssl/sha.h"
+#include "mincrypt/sha.h"
 
-static int CheckMode(int argc, char** argv) {
+int CheckMode(int argc, char** argv) {
     if (argc < 3) {
         return 2;
     }
     return applypatch_check(argv[2], argc-3, argv+3);
 }
 
-static int SpaceMode(int argc, char** argv) {
+int SpaceMode(int argc, char** argv) {
     if (argc != 3) {
         return 2;
     }
@@ -46,60 +43,79 @@ static int SpaceMode(int argc, char** argv) {
     return CacheSizeCheck(bytes);
 }
 
-// Parse arguments (which should be of the form "<sha1>:<filename>"
-// into the new parallel arrays *sha1s and *files.Returns true on
+// Parse arguments (which should be of the form "<sha1>" or
+// "<sha1>:<filename>" into the new parallel arrays *sha1s and
+// *patches (loading file contents into the patches).  Returns 0 on
 // success.
-static bool ParsePatchArgs(int argc, char** argv, std::vector<char*>* sha1s,
-                           std::vector<FileContents>* files) {
-    uint8_t digest[SHA_DIGEST_LENGTH];
+static int ParsePatchArgs(int argc, char** argv,
+                          char*** sha1s, Value*** patches, int* num_patches) {
+    *num_patches = argc;
+    *sha1s = malloc(*num_patches * sizeof(char*));
+    *patches = malloc(*num_patches * sizeof(Value*));
+    memset(*patches, 0, *num_patches * sizeof(Value*));
 
-    for (int i = 0; i < argc; ++i) {
+    uint8_t digest[SHA_DIGEST_SIZE];
+
+    int i;
+    for (i = 0; i < *num_patches; ++i) {
         char* colon = strchr(argv[i], ':');
-        if (colon == nullptr) {
-            printf("no ':' in patch argument \"%s\"\n", argv[i]);
-            return false;
+        if (colon != NULL) {
+            *colon = '\0';
+            ++colon;
         }
-        *colon = '\0';
-        ++colon;
+
         if (ParseSha1(argv[i], digest) != 0) {
             printf("failed to parse sha1 \"%s\"\n", argv[i]);
-            return false;
+            return -1;
         }
 
-        sha1s->push_back(argv[i]);
-        FileContents fc;
-        if (LoadFileContents(colon, &fc) != 0) {
-            return false;
+        (*sha1s)[i] = argv[i];
+        if (colon == NULL) {
+            (*patches)[i] = NULL;
+        } else {
+            FileContents fc;
+            if (LoadFileContents(colon, &fc) != 0) {
+                goto abort;
+            }
+            (*patches)[i] = malloc(sizeof(Value));
+            (*patches)[i]->type = VAL_BLOB;
+            (*patches)[i]->size = fc.size;
+            (*patches)[i]->data = (char*)fc.data;
         }
-        files->push_back(std::move(fc));
     }
-    return true;
+
+    return 0;
+
+  abort:
+    for (i = 0; i < *num_patches; ++i) {
+        Value* p = (*patches)[i];
+        if (p != NULL) {
+            free(p->data);
+            free(p);
+        }
+    }
+    free(*sha1s);
+    free(*patches);
+    return -1;
 }
 
-static int FlashMode(const char* src_filename, const char* tgt_filename,
-                     const char* tgt_sha1, size_t tgt_size) {
-    return applypatch_flash(src_filename, tgt_filename, tgt_sha1, tgt_size);
-}
-
-static int PatchMode(int argc, char** argv) {
-    FileContents bonusFc;
-    Value bonusValue;
-    Value* bonus = nullptr;
-
+int PatchMode(int argc, char** argv) {
+    Value* bonus = NULL;
     if (argc >= 3 && strcmp(argv[1], "-b") == 0) {
-        if (LoadFileContents(argv[2], &bonusFc) != 0) {
+        FileContents fc;
+        if (LoadFileContents(argv[2], &fc) != 0) {
             printf("failed to load bonus file %s\n", argv[2]);
             return 1;
         }
-        bonus = &bonusValue;
+        bonus = malloc(sizeof(Value));
         bonus->type = VAL_BLOB;
-        bonus->size = bonusFc.data.size();
-        bonus->data = reinterpret_cast<char*>(bonusFc.data.data());
+        bonus->size = fc.size;
+        bonus->data = (char*)fc.data;
         argc -= 2;
         argv += 2;
     }
 
-    if (argc < 4) {
+    if (argc < 6) {
         return 2;
     }
 
@@ -110,31 +126,33 @@ static int PatchMode(int argc, char** argv) {
         return 1;
     }
 
-    // If no <src-sha1>:<patch> is provided, it is in flash mode.
-    if (argc == 5) {
-        if (bonus != nullptr) {
-            printf("bonus file not supported in flash mode\n");
-            return 1;
-        }
-        return FlashMode(argv[1], argv[2], argv[3], target_size);
-    }
-    std::vector<char*> sha1s;
-    std::vector<FileContents> files;
-    if (!ParsePatchArgs(argc-5, argv+5, &sha1s, &files)) {
+    char** sha1s;
+    Value** patches;
+    int num_patches;
+    if (ParsePatchArgs(argc-5, argv+5, &sha1s, &patches, &num_patches) != 0) {
         printf("failed to parse patch args\n");
         return 1;
     }
-    std::vector<Value> patches(files.size());
-    std::vector<Value*> patch_ptrs(files.size());
-    for (size_t i = 0; i < files.size(); ++i) {
-        patches[i].type = VAL_BLOB;
-        patches[i].size = files[i].data.size();
-        patches[i].data = reinterpret_cast<char*>(files[i].data.data());
-        patch_ptrs[i] = &patches[i];
+
+    int result = applypatch(argv[1], argv[2], argv[3], target_size,
+                            num_patches, sha1s, patches, bonus);
+
+    int i;
+    for (i = 0; i < num_patches; ++i) {
+        Value* p = patches[i];
+        if (p != NULL) {
+            free(p->data);
+            free(p);
+        }
     }
-    return applypatch(argv[1], argv[2], argv[3], target_size,
-                      patch_ptrs.size(), sha1s.data(),
-                      patch_ptrs.data(), bonus);
+    if (bonus) {
+        free(bonus->data);
+        free(bonus);
+    }
+    free(sha1s);
+    free(patches);
+
+    return result;
 }
 
 // This program applies binary patches to files in a way that is safe
@@ -144,10 +162,6 @@ static int PatchMode(int argc, char** argv) {
 //
 // - if the sha1 hash of <tgt-file> is <tgt-sha1>, does nothing and exits
 //   successfully.
-//
-// - otherwise, if no <src-sha1>:<patch> is provided, flashes <tgt-file> with
-//   <src-file>. <tgt-file> must be a partition name, while <src-file> must
-//   be a regular image file. <src-file> will not be deleted on success.
 //
 // - otherwise, if the sha1 hash of <src-file> is <src-sha1>, applies the
 //   bsdiff <patch> to <src-file> to produce a new file (the type of patch
