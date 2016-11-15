@@ -5,6 +5,7 @@
  */
 #include "safe_iop.h"
 #include "zlib.h"
+#include "xz_config.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -366,7 +367,7 @@ static bool parseZipArchive(ZipArchive* pArchive)
         }
         pEntry->offset = localHdrOffset + LOCHDR
             + get2LE(localHdr + LOCNAM) + get2LE(localHdr + LOCEXT);
-        if (!safe_add(NULL, pEntry->offset, (typeof(pEntry->offset))pEntry->compLen)) {
+        if (!safe_add(NULL, pEntry->offset, pEntry->compLen)) {
             LOGW("Integer overflow adding in parseZipArchive\n");
             goto bail;
         }
@@ -426,8 +427,6 @@ bail:
 int mzOpenZipArchive(unsigned char* addr, size_t length, ZipArchive* pArchive)
 {
     int err;
-
-    memset(pArchive, 0, sizeof(ZipArchive));
 
     if (length < ENDHDR) {
         err = -1;
@@ -501,6 +500,68 @@ static bool processStoredEntry(const ZipArchive *pArchive,
     void *cookie)
 {
     return processFunction(pArchive->addr + pEntry->offset, pEntry->uncompLen, cookie);
+}
+
+static bool processXZEntry(const ZipArchive *pArchive,
+    const ZipEntry *pEntry, ProcessZipEntryContentsFunction processFunction,
+    void *cookie)
+{
+    unsigned char out[32*1024];
+    struct xz_buf b;
+    struct xz_dec *s;
+    enum xz_ret ret;
+
+    printf("ok!\n");
+    xz_crc32_init();
+    xz_crc64_init();
+    s = xz_dec_init(XZ_DYNALLOC, 1 << 26);
+    if (s == NULL) {
+        LOGE("XZ decompression alloc failed\n");
+        goto bail;
+    }
+
+    b.in = pArchive->addr + pEntry->offset;
+    b.in_pos = 0;
+    b.in_size = pEntry->compLen;
+    b.out = out;
+    b.out_pos = 0;
+    b.out_size = sizeof(out);
+
+    do {
+        ret = xz_dec_run(s, &b);
+
+        LOGVV("+++ b.in_pos = %zu b.out_pos = %zu ret=%d\n", b.in_pos, b.out_pos, ret);
+        if (b.out_pos == sizeof(out)) {
+            LOGVV("+++ processing %d bytes\n", b.out_pos);
+            bool err = processFunction(out, b.out_pos, cookie);
+            if (!err) {
+                LOGW("Process function elected to fail (in xz_dec)\n");
+                goto xz_bail;
+            }
+            b.out_pos = 0;
+        }
+
+    } while (ret == XZ_OK);
+
+    assert(ret == XZ_STREAM_END);
+
+    bool err = processFunction(out, b.out_pos, cookie);
+    if (!err) {
+        LOGW("Process function elected to fail (in xz_dec)\n");
+        goto xz_bail;
+    }
+
+
+xz_bail:
+    xz_dec_end(s);
+
+bail:
+    if (b.in_pos != (unsigned long)pEntry->compLen) {
+        LOGW("Size mismatch on file after xz_dec (%ld vs %zu)\n",
+                pEntry->compLen, b.in_pos);
+        //return false;
+    }
+    return true;
 }
 
 static bool processDeflatedEntry(const ZipArchive *pArchive,
@@ -636,6 +697,26 @@ static bool copyProcessFunction(const unsigned char *data, int dataLen,
         args->bufLen -= dataLen;
         return true;
     }
+    return false;
+}
+
+/*
+ * Similar to mzProcessZipEntryContents, but explicitly process the stream
+ * using XZ/LZMA before calling processFunction.
+ *
+ * This is a separate function for use by the updater. LZMA provides huge
+ * size reductions vs deflate, but isn't actually supported by the ZIP format.
+ * We need to process it using as little memory as possible.
+ */
+bool mzProcessZipEntryContentsXZ(const ZipArchive *pArchive,
+    const ZipEntry *pEntry, ProcessZipEntryContentsFunction processFunction,
+    void *cookie)
+{
+    if (pEntry->compression == STORED) {
+        return processXZEntry(pArchive, pEntry, processFunction, cookie);
+    }
+    LOGE("Explicit XZ decoding of entry '%s' unsupported for type %d",
+            pEntry->fileName, pEntry->compression);
     return false;
 }
 
@@ -968,7 +1049,8 @@ bool mzExtractRecursive(const ZipArchive *pArchive,
                 setfscreatecon(secontext);
             }
 
-            int fd = creat(targetFile, UNZIP_FILEMODE);
+            int fd = open(targetFile, O_CREAT|O_WRONLY|O_TRUNC|O_SYNC,
+                UNZIP_FILEMODE);
 
             if (secontext) {
                 freecon(secontext);
@@ -983,7 +1065,12 @@ bool mzExtractRecursive(const ZipArchive *pArchive,
             }
 
             bool ok = mzExtractZipEntryToFile(pArchive, pEntry, fd);
-            close(fd);
+            if (ok) {
+                ok = (fsync(fd) == 0);
+            }
+            if (close(fd) != 0) {
+                ok = false;
+            }
             if (!ok) {
                 LOGE("Error extracting \"%s\"\n", targetFile);
                 ok = false;

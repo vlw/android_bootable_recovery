@@ -8,6 +8,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,76 +21,32 @@
 #include "Log.h"
 #include "SysUtil.h"
 
-static int getFileStartAndLength(int fd, loff_t *start_, size_t *length_)
-{
-    loff_t start, end;
-    size_t length;
-
-    assert(start_ != NULL);
-    assert(length_ != NULL);
-
-    // TODO: isn't start always 0 for the single call site? just use fstat instead?
-
-    start = TEMP_FAILURE_RETRY(lseek64(fd, 0L, SEEK_CUR));
-    end = TEMP_FAILURE_RETRY(lseek64(fd, 0L, SEEK_END));
-
-    if (TEMP_FAILURE_RETRY(lseek64(fd, start, SEEK_SET)) == -1 ||
-                start == (loff_t) -1 || end == (loff_t) -1) {
-        LOGE("could not determine length of file\n");
-        return -1;
-    }
-
-    length = end - start;
-    if (length == 0) {
-        LOGE("file is empty\n");
-        return -1;
-    }
-
-    *start_ = start;
-    *length_ = length;
-
-    return 0;
-}
-
-/*
- * Map a file (from fd's current offset) into a private, read-only memory
- * segment.  The file offset must be a multiple of the page size.
- *
- * On success, returns 0 and fills out "pMap".  On failure, returns a nonzero
- * value and does not disturb "pMap".
- */
 static bool sysMapFD(int fd, MemMapping* pMap) {
-    loff_t start;
-    size_t length;
-    void* memPtr;
-
     assert(pMap != NULL);
 
-    if (getFileStartAndLength(fd, &start, &length) < 0)
-        return -1;
+    struct stat sb;
+    if (fstat(fd, &sb) == -1) {
+        LOGE("fstat(%d) failed: %s\n", fd, strerror(errno));
+        return false;
+    }
 
-#if (PLATFORM_SDK_VERSION >= 21)
-    memPtr = mmap64(NULL, length, PROT_READ, MAP_PRIVATE, fd, start);
-#else
-    // Older versions of Android do not have mmap64 so we will just use mmap instead
-    memPtr = mmap(NULL, length, PROT_READ, MAP_PRIVATE, fd, start);
-#endif
+    void* memPtr = mmap(NULL, sb.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
     if (memPtr == MAP_FAILED) {
-        LOGE("mmap(%d, R, PRIVATE, %d, 0) failed: %s\n", (int) length, fd, strerror(errno));
+        LOGE("mmap(%d, R, PRIVATE, %d, 0) failed: %s\n", (int) sb.st_size, fd, strerror(errno));
         return false;
     }
 
     pMap->addr = memPtr;
-    pMap->length = length;
+    pMap->length = sb.st_size;
     pMap->range_count = 1;
     pMap->ranges = malloc(sizeof(MappedRange));
     if (pMap->ranges == NULL) {
         LOGE("malloc failed: %s\n", strerror(errno));
-        munmap(memPtr, length);
+        munmap(memPtr, pMap->length);
         return false;
     }
     pMap->ranges[0].addr = memPtr;
-    pMap->ranges[0].length = length;
+    pMap->ranges[0].length = sb.st_size;
 
     return true;
 }
@@ -118,6 +75,7 @@ static int sysMapBlockFile(FILE* mapf, MemMapping* pMap)
         LOGE("failed to parse block map header\n");
         return -1;
     }
+
     if (blksize != 0) {
         blocks = ((size-1) / blksize) + 1;
     }
@@ -136,12 +94,7 @@ static int sysMapBlockFile(FILE* mapf, MemMapping* pMap)
 
     // Reserve enough contiguous address space for the whole file.
     unsigned char* reserve;
-#if (PLATFORM_SDK_VERSION >= 21)
     reserve = mmap64(NULL, blocks * blksize, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
-#else
-    // Older versions of Android do not have mmap64 so we will just use mmap instead
-    reserve = mmap(NULL, blocks * blksize, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
-#endif
     if (reserve == MAP_FAILED) {
         LOGE("failed to reserve address space: %s\n", strerror(errno));
         free(pMap->ranges);
@@ -172,12 +125,8 @@ static int sysMapBlockFile(FILE* mapf, MemMapping* pMap)
           success = false;
           break;
         }
-#if (PLATFORM_SDK_VERSION >= 21)
-        void* addr = mmap64(next, (end-start)*blksize, PROT_READ, MAP_PRIVATE | MAP_FIXED, fd, ((off64_t)start)*blksize);
-#else
-        // Older versions of Android do not have mmap64 so we will just use mmap instead
-        void* addr = mmap(next, (end-start)*blksize, PROT_READ, MAP_PRIVATE | MAP_FIXED, fd, ((off64_t)start)*blksize);
-#endif
+
+        void* addr = mmap64(next, length, PROT_READ, MAP_PRIVATE | MAP_FIXED, fd, ((off64_t)start)*blksize);
         if (addr == MAP_FAILED) {
             LOGE("failed to map block %d: %s\n", i, strerror(errno));
             success = false;

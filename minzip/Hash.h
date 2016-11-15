@@ -15,10 +15,6 @@
 #include <stdbool.h>
 #include <assert.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 /* compute the hash of an item with a specific type */
 typedef unsigned int (*HashCompute)(const void* item);
 
@@ -186,9 +182,5 @@ INLINE void* mzHashIterData(HashIter* pIter) {
 typedef unsigned int (*HashCalcFunc)(const void* item);
 void mzHashTableProbeCount(HashTable* pHashTable, HashCalcFunc calcFunc,
     HashCompareFunc cmpFunc);
-
-#ifdef __cplusplus
-}
-#endif
 
 #endif /*_MINZIP_HASH*/

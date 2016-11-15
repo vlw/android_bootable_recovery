@@ -32,7 +32,7 @@ extern "C" {
 typedef struct ZipEntry {
     unsigned int fileNameLen;
     const char*  fileName;       // not null-terminated
-    loff_t       offset;
+    long         offset;
     long         compLen;
     long         uncompLen;
     int          compression;
@@ -85,7 +85,7 @@ void mzCloseZipArchive(ZipArchive* pArchive);
 const ZipEntry* mzFindZipEntry(const ZipArchive* pArchive,
         const char* entryName);
 
-INLINE loff_t mzGetZipEntryOffset(const ZipEntry* pEntry) {
+INLINE long mzGetZipEntryOffset(const ZipEntry* pEntry) {
     return pEntry->offset;
 }
 INLINE long mzGetZipEntryUncompLen(const ZipEntry* pEntry) {
@@ -110,6 +110,18 @@ typedef bool (*ProcessZipEntryContentsFunction)(const unsigned char *data,
  * This is useful for calculating the hash of an entry's uncompressed contents.
  */
 bool mzProcessZipEntryContents(const ZipArchive *pArchive,
+    const ZipEntry *pEntry, ProcessZipEntryContentsFunction processFunction,
+    void *cookie);
+
+/*
+ * Similar to mzProcessZipEntryContents, but explicitly process the stream
+ * using XZ/LZMA before calling processFunction.
+ *
+ * This is a separate function for use by the updater. LZMA provides huge
+ * size reductions vs deflate, but isn't actually supported by the ZIP format.
+ * We need to process it using as little memory as possible.
+ */
+bool mzProcessZipEntryContentsXZ(const ZipArchive *pArchive,
     const ZipEntry *pEntry, ProcessZipEntryContentsFunction processFunction,
     void *cookie);
 
